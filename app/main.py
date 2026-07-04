@@ -28,16 +28,27 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(
-    title="JobForge — Distributed Job Scheduler",
-    description=(
+import os
+
+app_kwargs = {
+    "title": "JobForge — Distributed Job Scheduler",
+    "description": (
         "A production-inspired distributed job scheduling platform: "
         "queues, atomic claiming, retries with backoff, cron schedules, "
         "dead letter queue, workers with heartbeats, and a live dashboard."
     ),
-    version="1.0.0",
-    lifespan=lifespan,
-)
+    "version": "1.0.0",
+}
+
+if os.environ.get("VERCEL"):
+    try:
+        Base.metadata.create_all(bind=engine)
+    except Exception as e:
+        log.error("Failed to create database tables: %s", e)
+else:
+    app_kwargs["lifespan"] = lifespan
+
+app = FastAPI(**app_kwargs)
 install_error_handlers(app)
 
 
