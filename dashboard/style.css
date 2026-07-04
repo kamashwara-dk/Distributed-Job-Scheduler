@@ -610,6 +610,7 @@ td.mono { font-size: 12px; font-family: 'Courier New', monospace; }
 .badge.cancelled { background: rgba(30,0,25,0.05); color: var(--faint); border: 1px solid var(--border-soft); }
 .badge.online    { background: rgba(79,3,65,0.08); color: var(--purple); border: 1px solid rgba(79,3,65,0.20); }
 .badge.offline   { background: rgba(30,0,25,0.04); color: var(--faint); border: 1px solid var(--border-soft); }
+.badge.stopping  { background: rgba(122,5,98,0.08); color: var(--purple-mid); border: 1px solid rgba(122,5,98,0.25); }
 .badge.paused    { background: rgba(79,3,65,0.08); color: var(--muted); border: 1px solid var(--border-soft); }
 @keyframes pulse-badge {
   0%,100% { box-shadow: 0 0 0 0 var(--purple-glow); }

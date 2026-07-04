@@ -76,10 +76,20 @@ def log_out(l: JobLog):
 
 
 def worker_out(w: Worker, online_threshold_s: int, age_s: float):
+    # Derive effective status: a worker in "stopping" state that recently
+    # heartbeated is still considered "stopping" (not "online") in the UI.
+    if w.status == "offline":
+        effective_status = "offline"
+    elif w.status == "stopping":
+        effective_status = "stopping"
+    elif age_s < online_threshold_s:
+        effective_status = "online"
+    else:
+        effective_status = "offline"
     return {
         "id": w.id, "hostname": w.hostname, "pid": w.pid,
         "concurrency": w.concurrency,
-        "status": "online" if (w.status == "online" and age_s < online_threshold_s) else "offline",
+        "status": effective_status,
         "started_at": _dt(w.started_at), "last_heartbeat_at": _dt(w.last_heartbeat_at),
         "heartbeat_age_s": round(age_s, 1),
     }

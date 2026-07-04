@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import func, select
+from sqlalchemy import Integer, func, select, text
 from sqlalchemy.orm import Session
 
 from app.access import get_project
@@ -27,20 +27,42 @@ def overview(project_id: int, user: User = Depends(get_current_user),
         .group_by(Job.status)
     ).all()) if queue_ids else {}
 
-    # completed-per-minute buckets for the last 30 minutes (drives the chart)
-    window_start = now - timedelta(minutes=30)
-    finished = db.execute(
-        select(Job.finished_at).where(
-            Job.queue_id.in_(queue_ids),
-            Job.status == JobStatus.COMPLETED,
-            Job.finished_at >= window_start,
-        )
-    ).all() if queue_ids else []
+    # Completed-per-minute buckets for the last 30 minutes (drives the chart).
+    # Uses a DB-side expression to compute the minute bucket, avoiding pulling
+    # all timestamps into Python for large result sets.
     buckets = [0] * 30
-    for (ts,) in finished:
-        idx = int((now - ts).total_seconds() // 60)
-        if 0 <= idx < 30:
-            buckets[29 - idx] += 1
+    if queue_ids:
+        window_start = now - timedelta(minutes=30)
+        dialect = db.get_bind().dialect.name
+
+        if dialect == "postgresql":
+            # Use EXTRACT(EPOCH ...) for sub-second precision on PG
+            elapsed_expr = func.extract(
+                "epoch", func.cast(text("NOW()"), type_=None) - Job.finished_at
+            ).cast(Integer)
+        else:
+            # SQLite: julianday arithmetic gives seconds since now
+            elapsed_expr = func.cast(
+                (func.julianday(func.datetime("now")) - func.julianday(Job.finished_at)) * 86400,
+                Integer
+            )
+
+        minute_bucket_expr = elapsed_expr / 60
+
+        rows = db.execute(
+            select(minute_bucket_expr.label("bucket_idx"), func.count().label("cnt"))
+            .where(
+                Job.queue_id.in_(queue_ids),
+                Job.status == JobStatus.COMPLETED,
+                Job.finished_at >= window_start,
+            )
+            .group_by(text("bucket_idx"))
+        ).all()
+
+        for bucket_idx, cnt in rows:
+            idx = int(bucket_idx)
+            if 0 <= idx < 30:
+                buckets[29 - idx] += cnt
 
     per_queue = db.execute(
         select(Queue.id, Queue.name, Queue.paused, func.count(Job.id))

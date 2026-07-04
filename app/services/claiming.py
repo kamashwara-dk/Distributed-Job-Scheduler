@@ -16,6 +16,16 @@ from sqlalchemy.orm import Session
 
 from app.models import Job, JobStatus, Queue, utcnow
 
+
+def _dialect_name(db: Session) -> str:
+    """Return the DB dialect name, compatible with SQLAlchemy 1.x and 2.x.
+    Session.bind was removed in SA 2.0 — use get_bind() which works on both."""
+    try:
+        return db.get_bind().dialect.name
+    except Exception:
+        # Fallback: inspect the engine that backs the session factory
+        return db.execute(text("SELECT 1")).context.dialect.name
+
 _PG_CLAIM = text(
     """
     UPDATE jobs
@@ -71,7 +81,7 @@ def claim_jobs(db: Session, worker_id: str, max_jobs: int) -> list[Job]:
         want = min(max_jobs - len(claimed_ids), q.concurrency_limit - active.get(q.id, 0))
         if want <= 0:
             continue
-        if db.bind.dialect.name == "postgresql":
+        if _dialect_name(db) == "postgresql":
             rows = db.execute(
                 _PG_CLAIM, {"worker": worker_id, "now": now, "queue_id": q.id, "n": want}
             ).fetchall()

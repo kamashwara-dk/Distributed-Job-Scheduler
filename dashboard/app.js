@@ -298,6 +298,7 @@ async function renderQueues() {
       <td><span style="font-weight:500">${esc(q.name)}</span></td>
       <td>${q.priority}</td>
       <td>${q.concurrency_limit}</td>
+      <td>${q.rate_limit_per_minute > 0 ? q.rate_limit_per_minute + "/min" : "∞"}</td>
       <td>${q.paused ? badge("paused") : badge("online")}</td>
       <td>${s.depth}</td>
       <td>${s.active}</td>
@@ -313,7 +314,7 @@ async function renderQueues() {
   }));
   $("queues-table").innerHTML = `<div class="table-wrap"><table>
     <thead><tr>
-      <th>Name</th><th>Priority</th><th>Concurrency</th><th>State</th>
+      <th>Name</th><th>Priority</th><th>Concurrency</th><th>Rate limit</th><th>State</th>
       <th>Pending</th><th>Active</th><th>Done</th><th>Dead</th><th>Avg time</th><th></th>
     </tr></thead>
     <tbody>${rows.join("")}</tbody>
@@ -334,6 +335,7 @@ async function createQueue() {
         name: $("q-name").value.trim(),
         priority: +$("q-priority").value,
         concurrency_limit: +$("q-concurrency").value,
+        rate_limit_per_minute: +($("q-ratelimit")?.value || 0),
       }),
     });
     $("q-name").value = "";
@@ -414,7 +416,7 @@ window.openJob = async (id) => {
     actions.push(`<button class="btn primary" onclick="jobAction('${j.id}','retry')">Retry Job</button>`);
 
   let analysisHtml = "";
-  if (analysis && j.status === "dead" || (analysis && j.attempts > 1)) {
+  if (analysis && (j.status === "dead" || j.attempts > 1)) {
     const a = analysis.analysis;
     const confidenceColor = a.confidence === "high" ? "var(--green)" : "var(--amber)";
     analysisHtml = `
@@ -644,7 +646,7 @@ function connectWs() {
     try {
       const data = JSON.parse(e.data);
       if (data.type === "metrics" && state.tab === "overview") {
-        // Update stat cards instantly without full refresh
+        // Update stat cards instantly from the WebSocket push, without a full REST round-trip
         const c = data.counts;
         const vals = {
           queued_pending: (c.queued || 0) + (c.scheduled || 0),
@@ -653,10 +655,19 @@ function connectWs() {
           dead: c.dead || 0,
           online_workers: data.online_workers || 0,
         };
-        STAT_DEFS.forEach((d) => {
-          const cards = document.querySelectorAll(".stat-num");
-          // lightweight: just trigger a full overview refresh
+        // Update the numeric values in each stat card without re-rendering the entire panel
+        const cards = document.querySelectorAll(".stat-card");
+        STAT_DEFS.forEach((d, i) => {
+          const numEl = cards[i] && cards[i].querySelector(".stat-num");
+          if (numEl) numEl.textContent = vals[d.key] ?? 0;
         });
+        // Update the DLQ badge count too
+        const countBadge = $("dlq-count");
+        if (countBadge) {
+          const deadCount = c.dead || 0;
+          countBadge.textContent = deadCount;
+          countBadge.classList.toggle("visible", deadCount > 0);
+        }
       }
     } catch (_) {}
   };

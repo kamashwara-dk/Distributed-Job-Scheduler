@@ -1,8 +1,15 @@
 # Executes one claimed job: lifecycle bookkeeping + handler dispatch.
 # Each execution opens its own DB session (sessions aren't thread-safe).
+#
+# timeout_s enforcement: uses a concurrent.futures.ThreadPoolExecutor to run
+# the handler in a sub-thread with a real wall-clock deadline.  On timeout the
+# handler thread is abandoned (Python can't forcibly kill threads, but the
+# worker slot is freed immediately and the job is marked failed so the retry
+# machinery takes over).
 
 import logging
 import traceback
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 
 from app.database import SessionLocal
 from app.models import Job
@@ -15,6 +22,10 @@ from app.services.lifecycle import (
 from worker.handlers import HANDLERS, HandlerContext
 
 log = logging.getLogger("worker.runner")
+
+# One-thread pool per job execution — avoids sharing state between the outer
+# worker pool and the timeout sub-thread.
+_TIMEOUT_EXECUTOR = ThreadPoolExecutor(thread_name_prefix="job-timeout")
 
 
 def run_job(job_id: str, worker_id: str) -> None:
@@ -35,7 +46,23 @@ def run_job(job_id: str, worker_id: str) -> None:
             return
         try:
             ctx = HandlerContext(execution.attempt, job.timeout_s, log_fn)
-            result = handler(job.payload or {}, ctx)
+            timeout = job.timeout_s  # None means no limit
+
+            if timeout:
+                # Run the handler in a sub-thread so we can apply a deadline.
+                future = _TIMEOUT_EXECUTOR.submit(handler, job.payload or {}, ctx)
+                try:
+                    result = future.result(timeout=timeout)
+                except FutureTimeout:
+                    error = f"Job timed out after {timeout}s (timeout_s={timeout})"
+                    log.warning("job %s timed out", job.id[:8])
+                    db.rollback()
+                    job = db.get(Job, job_id)
+                    fail_execution(db, job, execution, error)
+                    return
+            else:
+                result = handler(job.payload or {}, ctx)
+
             complete_execution(db, job, execution, result)
             log.info("job %s completed (attempt %d)", job.id[:8], execution.attempt)
         except Exception as exc:
