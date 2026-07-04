@@ -30,6 +30,8 @@ async def lifespan(app: FastAPI):
 
 import os
 
+IS_VERCEL = bool(os.environ.get("VERCEL"))
+
 app_kwargs = {
     "title": "JobForge — Distributed Job Scheduler",
     "description": (
@@ -38,15 +40,8 @@ app_kwargs = {
         "dead letter queue, workers with heartbeats, and a live dashboard."
     ),
     "version": "1.0.0",
+    "lifespan": lifespan,
 }
-
-if os.environ.get("VERCEL"):
-    try:
-        Base.metadata.create_all(bind=engine)
-    except Exception as e:
-        log.error("Failed to create database tables: %s", e)
-else:
-    app_kwargs["lifespan"] = lifespan
 
 app = FastAPI(**app_kwargs)
 install_error_handlers(app)
@@ -78,6 +73,8 @@ app.include_router(dlq.router, prefix=API)
 app.include_router(metrics.router, prefix=API)
 
 # Dashboard (static, no build step) served at /
+# On Vercel the static files are served by Vercel's CDN directly (see vercel.json),
+# so we only mount them when running locally or in Docker.
 dashboard_dir = Path(__file__).resolve().parent.parent / "dashboard"
-if dashboard_dir.is_dir():
+if dashboard_dir.is_dir() and not IS_VERCEL:
     app.mount("/", StaticFiles(directory=dashboard_dir, html=True), name="dashboard")
