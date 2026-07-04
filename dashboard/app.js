@@ -30,7 +30,16 @@ async function api(path, opts = {}) {
   if (state.token) headers["Authorization"] = "Bearer " + state.token;
   const res = await fetch(API + path, { ...opts, headers });
   if (res.status === 401) { logout(); throw new Error("Session expired"); }
-  const data = res.status === 204 ? null : await res.json();
+  if (res.status === 204) return null;
+  // Safely parse JSON — the server may return plain text on unexpected errors.
+  let data;
+  const text = await res.text();
+  try {
+    data = JSON.parse(text);
+  } catch {
+    if (!res.ok) throw new Error(text || `Request failed (${res.status})`);
+    throw new Error("Invalid JSON response from server");
+  }
   if (!res.ok) throw new Error(data?.error?.message || "Request failed");
   return data;
 }

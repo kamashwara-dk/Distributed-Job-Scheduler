@@ -1,10 +1,15 @@
 # Consistent error envelope: every error returns
 # {"error": {"code": ..., "message": ..., "details": ...}}
 
+import logging
+import traceback
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+log = logging.getLogger("api.errors")
 
 _CODES = {
     400: "bad_request",
@@ -14,6 +19,7 @@ _CODES = {
     409: "conflict",
     422: "validation_error",
     429: "rate_limited",
+    500: "internal_error",
 }
 
 
@@ -40,6 +46,26 @@ def install_error_handlers(app: FastAPI) -> None:
                     "code": "validation_error",
                     "message": "Request validation failed",
                     "details": exc.errors(),
+                }
+            },
+        )
+
+    @app.exception_handler(Exception)
+    async def unhandled_error(request: Request, exc: Exception):
+        log.error(
+            "Unhandled exception on %s %s: %s\n%s",
+            request.method,
+            request.url.path,
+            exc,
+            traceback.format_exc(),
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": {
+                    "code": "internal_error",
+                    "message": "Internal server error",
+                    "details": str(exc),
                 }
             },
         )

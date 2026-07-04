@@ -21,9 +21,21 @@ log = logging.getLogger("api")
 
 IS_VERCEL = bool(os.environ.get("VERCEL"))
 
+# ── Eager DB init ─────────────────────────────────────────────────────────────
+# On Vercel (serverless), ASGI lifespan startup events are NOT triggered by the
+# @vercel/python runtime.  Calling create_all() at module level ensures the
+# tables exist when the first request arrives.  For local / Docker this is a
+# harmless no-op because create_all() is idempotent.
+try:
+    Base.metadata.create_all(bind=engine)
+    log.info("Database tables ensured (eager init)")
+except Exception as e:
+    log.error("Eager DB init failed: %s", e)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Still keep this for local uvicorn — it runs after the event loop starts.
     try:
         Base.metadata.create_all(bind=engine)
     except Exception as e:
@@ -57,6 +69,20 @@ async def request_logging(request: Request, call_next):
 @app.get("/api/health", tags=["health"])
 def health():
     return {"status": "ok"}
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    from fastapi.responses import Response
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36">'
+        '<rect width="36" height="36" rx="10" fill="#6366f1"/>'
+        '<path d="M10 18l5 5 11-11" stroke="#fff" stroke-width="2.5" '
+        'stroke-linecap="round" stroke-linejoin="round" fill="none"/>'
+        '</svg>'
+    )
+    return Response(content=svg, media_type="image/svg+xml",
+                    headers={"Cache-Control": "public, max-age=86400"})
 
 
 # ── REST API ──────────────────────────────────────────────────────────────────
