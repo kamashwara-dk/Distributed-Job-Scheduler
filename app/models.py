@@ -114,6 +114,8 @@ class Queue(Base):
     priority: Mapped[int] = mapped_column(Integer, default=0)
     # Max concurrent claimed/running jobs across all workers.
     concurrency_limit: Mapped[int] = mapped_column(Integer, default=10)
+    # Optional token-bucket rate limit: max jobs enqueued per minute (0 = unlimited).
+    rate_limit_per_minute: Mapped[int] = mapped_column(Integer, default=0)
     paused: Mapped[bool] = mapped_column(Boolean, default=False)
     retry_policy_id: Mapped[int | None] = mapped_column(
         ForeignKey("retry_policies.id", ondelete="SET NULL"), nullable=True

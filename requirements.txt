@@ -3,6 +3,7 @@ uvicorn[standard]>=0.30
 sqlalchemy>=2.0
 pydantic>=2.7
 pydantic-settings>=2.3
+websockets>=12.0
 # psycopg is only needed when DATABASE_URL points to PostgreSQL (Docker / self-hosted).
 # Vercel uses SQLite in-memory, so this driver is intentionally omitted here.
 # Uncomment the line below if you deploy to a platform with PostgreSQL support:

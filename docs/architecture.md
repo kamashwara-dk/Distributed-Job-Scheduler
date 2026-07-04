@@ -1,82 +1,153 @@
-Architecture
+# Architecture
 
-Components
+## System Overview
 
-```mermaid
-flowchart LR
-    B[Browser dashboard\nvanilla JS, polls every 3s] -->|HTTP + JWT| A[FastAPI API server]
-    A -->|SQLAlchemy| D[(PostgreSQL)]
-    W1[Worker 1] -->|claim / heartbeat / cron CAS| D
-    W2[Worker 2] --> D
-    WN[Worker N] --> D
+JobForge is a **distributed job scheduling platform** built on three independently deployable components that share a single database as their coordination point. No message broker, no shared in-process state — the database is the queue, the lock, and the audit log.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  Client Layer                                                       │
+│                                                                     │
+│  ┌──────────────────┐   ┌──────────────────────────────────────┐   │
+│  │  Browser / SPA   │   │  External apps (REST API consumers)  │   │
+│  │  polls every 3s  │   │  job producers / status checkers     │   │
+│  │  WebSocket feed  │   │                                      │   │
+│  └────────┬─────────┘   └──────────────┬───────────────────────┘   │
+└───────────┼──────────────────────────  │  ──────────────────────────┘
+            │ HTTP + JWT                 │ HTTP + JWT
+            ▼                            ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  API Layer (horizontally scalable, stateless)                       │
+│                                                                     │
+│  ┌────────────────────────────────────────────────────────────┐    │
+│  │  FastAPI  (uvicorn)                                        │    │
+│  │  • auth / orgs / projects / queues / jobs / schedules     │    │
+│  │  • metrics / DLQ / workers                                │    │
+│  │  • WebSocket live feed  (/api/v1/ws/{project_id})         │    │
+│  │  • AI failure analysis  (/api/v1/jobs/{id}/analysis)      │    │
+│  │  • static dashboard     (/)                               │    │
+│  └─────────────────────────────┬──────────────────────────────┘    │
+└────────────────────────────────┼────────────────────────────────────┘
+                                 │ SQLAlchemy (ORM + raw SQL)
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  Database  (single source of truth)                                 │
+│                                                                     │
+│  PostgreSQL (production) · SQLite (local dev / CI tests)            │
+│                                                                     │
+│  12 tables — users, orgs, projects, retry policies, queues, jobs,  │
+│  job_executions, job_logs, workers, worker_heartbeats,             │
+│  scheduled_jobs, dead_letter_jobs                                   │
+└─────────────────────────────────────────────────────────────────────┘
+                                 ▲
+                    SQL (claim / heartbeat / cron CAS)
+          ┌──────────────────────┼───────────────────────┐
+          │                      │                       │
+  ┌───────┴──────┐      ┌────────┴─────┐      ┌─────────┴────┐
+  │   Worker 1   │      │   Worker 2   │      │   Worker N   │
+  │  thread pool │      │  thread pool │  ···  │  thread pool │
+  └──────────────┘      └──────────────┘      └──────────────┘
 ```
 
-API server (app/) — stateless FastAPI process. Owns the public REST
-surface: auth (JWT), organizations/projects/queues CRUD, job submission
-(immediate / delayed / batch / cron templates), job inspection, DLQ
-management, metrics. Also serves the static dashboard. Can be scaled
-horizontally behind a load balancer because it keeps no in-process state.
+---
 
-Worker service (worker/) — a separate process (python -m worker.main),
-deliberately not an API endpoint. Each worker:
+## Components
 
-- polls for due jobs every second and claims them atomically (see below)
-- executes up to WORKER_CONCURRENCY jobs in a thread pool
-- heartbeats every 5s (workers.last_heartbeat_at + a worker_heartbeats row)
-- runs a maintenance tick every 2s: cron materialization + dead-worker reaping
-- on SIGTERM/SIGINT: stops claiming, drains running jobs (up to 25s), then
-  marks itself offline
+### API Server (`app/`)
 
-PostgreSQL — the single coordination point. Workers share no state and
-never communicate with each other or with the API; every guarantee
-(single execution, exactly-once cron, crash recovery) is enforced with
-database primitives (row locks, compare-and-set updates, constraints).
+A **stateless** FastAPI process. Because it holds no in-process state, any number of replicas can run behind a load balancer.
 
+Responsibilities:
+- **Authentication** — JWT-based, bcrypt password hashing, configurable expiry
+- **Multi-tenancy** — org → project → queue → job ownership chain; every read/write validates membership; cross-tenant access returns 404 (not 403)
+- **RBAC** — `owner` role required for structural changes (create/update/delete queues, schedules); `member` role sufficient for operational work (create jobs, pause/resume, retry DLQ)
+- **REST API** — 30+ endpoints, Pydantic validation, limit/offset pagination, uniform error envelope
+- **Rate limiting** — per-queue token bucket: rejects `POST /jobs` when more than `rate_limit_per_minute` jobs were created in the last 60 seconds
+- **WebSocket feed** — live metrics push at `/api/v1/ws/{project_id}` (auth via `?token=` query param)
+- **AI failure analysis** — pattern-based root-cause classification at `/api/v1/jobs/{id}/analysis`
+- **Static dashboard** — serves `dashboard/` at `/`
 
-Why coordinate through the database (and not a message broker)?
+### Worker Service (`worker/`)
 
-A broker (Redis/RabbitMQ) is the classic answer, but it adds a second
-stateful system and — crucially — splits the source of truth: the broker
-knows the queue, the DB knows the history, and keeping them consistent
-requires careful two-phase logic. At this project's scale, PostgreSQL's row
-locking (FOR UPDATE SKIP LOCKED) gives correct, contention-free claiming
-with one source of truth, transactional state transitions, and free
-auditability. The claiming logic is isolated in app/services/claiming.py,
-so swapping in a broker later would not touch the API or the handlers.
+A **separate process** (`python -m worker.main`), deliberately not part of the API. Isolation means a wedged handler can't take down the API, and workers scale independently.
 
+Each worker runs **three concurrent loops**:
 
-Data flow: life of a job
-
-1. POST /api/v1/queues/{id}/jobs — validated, written as a jobs row
-   (queued, or scheduled if run_at/delay_s puts it in the future).
-2. A worker's poll promotes due scheduled rows, then claims up to its free
-   capacity, honoring queue priority and per-queue concurrency limits.
-3. The runner opens a job_executions row (attempt N), flips the job to
-   running, and dispatches to the registered handler. Handler log lines
-   land in job_logs tied to that execution.
-4. Success → completed (+ result JSON). Failure → attempts++, and either
-   requeued with a backoff delay (run_at = now + backoff) or, once
-   attempts >= max_attempts, moved to dead with a dead_letter_jobs snapshot.
-5. The dashboard polls the read APIs and renders all of this live.
-
-
-Concurrency control, in one place each
-
-| Problem | Mechanism | Where |
+| Loop | Interval | Responsibility |
 |---|---|---|
-| Two workers claim the same job | FOR UPDATE SKIP LOCKED (PG) / CAS update + rowcount (SQLite) | services/claiming.py |
-| Queue concurrency limit | claim capped at limit − active counted in the claim transaction | services/claiming.py |
-| Cron fires once, not once per worker | CAS on scheduled_jobs.next_run_at | services/cron.py |
-| Worker dies mid-job | heartbeat staleness → reaper requeues orphans | services/lifecycle.py |
-| Client retries a create request | unique (queue_id, idempotency_key) + return-existing | routers/jobs.py |
+| `poll_loop` | 1 s | Promote due scheduled jobs → claim up to `concurrency` jobs → dispatch to thread pool |
+| `heartbeat_loop` | 5 s | Update `workers.last_heartbeat_at` + write a `worker_heartbeats` row; prune old rows |
+| `maintenance_loop` | 2 s | Materialize due cron jobs (CAS-guarded); reap stale workers (requeue orphaned jobs) |
 
+Graceful shutdown on `SIGTERM`/`SIGINT`:
+1. Stop the poll loop (no new claims)
+2. Mark worker as `stopping`
+3. Drain running handlers up to 25 s
+4. Mark worker as `offline`
 
-Scaling story
+### Database
 
-- Workers: purely horizontal — docker compose up --scale worker=N.
-  SKIP LOCKED means more workers never block each other on the claim query.
-- API: stateless; N replicas behind a load balancer.
-- Database: the eventual bottleneck. Mitigations in order: the composite
-  claim index (already present), partitioning jobs by status/time,
-  archiving completed jobs, then queue sharding across databases (the
-  queue_id foreign key is the natural shard key).
+The **coordination point** for all distributed guarantees — no separate broker needed. See [Design Decisions §4](DESIGN.md) for the full rationale.
+
+---
+
+## Data Flow: Life of a Job
+
+```
+1.  POST /api/v1/queues/{id}/jobs
+    └── validated + written as jobs row
+        status = QUEUED  (or SCHEDULED if run_at is in the future)
+
+2.  Worker poll tick (every 1 s)
+    └── promote_due_scheduled()  → flip SCHEDULED → QUEUED when run_at ≤ now
+    └── claim_jobs()             → atomic claim (SKIP LOCKED / CAS)
+        status = CLAIMED, claimed_by = worker_id
+
+3.  Thread pool picks up the job
+    └── start_execution()        → status = RUNNING, job_executions row opened
+    └── handler(payload, ctx)    → runs; ctx.log() writes job_logs rows
+
+4a. Handler succeeds
+    └── complete_execution()     → status = COMPLETED, result stored
+
+4b. Handler raises an exception
+    └── fail_execution()
+        ├── attempts < max_attempts  → status = QUEUED, run_at = now + backoff
+        └── attempts ≥ max_attempts  → status = DEAD, snapshot → dead_letter_jobs
+
+5.  Dashboard / API consumer
+    └── GET /jobs/{id}  or  WS feed  → reads status, logs, executions in real time
+```
+
+---
+
+## Concurrency Control
+
+Every distributed guarantee is enforced in exactly one place:
+
+| Problem | Mechanism | Location |
+|---|---|---|
+| Two workers claim the same job | `FOR UPDATE SKIP LOCKED` (PG) / CAS `UPDATE … WHERE status='queued'` (SQLite) | `services/claiming.py` |
+| Queue concurrency limit | Claim count capped at `concurrency_limit − active` inside the claim transaction | `services/claiming.py` |
+| Cron fires exactly once with N workers | CAS on `scheduled_jobs.next_run_at` — only the winner's rowcount is 1 | `services/cron.py` |
+| Worker crash mid-job | Heartbeat staleness (30 s) triggers reaper → requeues orphans without burning an attempt | `services/lifecycle.py` |
+| Client retries job creation | Unique `(queue_id, idempotency_key)` constraint; return-existing on collision | `routers/jobs.py` |
+| Queue rate limit | 60-second sliding window count before insert; 429 on breach | `routers/jobs.py` |
+
+---
+
+## Scaling Story
+
+```
+Workers:    purely horizontal — docker compose up --scale worker=N
+            SKIP LOCKED means more workers never block each other
+
+API:        stateless; N replicas behind any load balancer
+
+Database:   the eventual bottleneck. Mitigation path:
+            1. Composite claim index (already present)
+            2. Archive completed jobs (move to cold table)
+            3. Partition jobs table by status + time range
+            4. Shard queues across database instances
+               (queue_id is the natural shard key)
+```

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.access import get_project, get_queue
+from app.access import get_project, get_project_owner, get_queue, get_queue_owner
 from app.database import get_db
 from app.models import Job, JobExecution, JobStatus, Queue, User, utcnow
 from app.schemas import QueueIn, QueueUpdate
@@ -17,7 +17,7 @@ router = APIRouter(tags=["queues"])
 @router.post("/projects/{project_id}/queues", status_code=201, summary="Create a queue")
 def create_queue(project_id: int, body: QueueIn,
                  user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    get_project(db, user, project_id)
+    get_project_owner(db, user, project_id)
     queue = Queue(project_id=project_id, **body.model_dump())
     db.add(queue)
     db.commit()
@@ -34,10 +34,10 @@ def list_queues(project_id: int, user: User = Depends(get_current_user),
     return {"items": [queue_out(q) for q in queues]}
 
 
-@router.patch("/queues/{queue_id}", summary="Update queue configuration")
+@router.patch("/queues/{queue_id}", summary="Update queue configuration (owner only)")
 def update_queue(queue_id: int, body: QueueUpdate,
                  user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    queue = get_queue(db, user, queue_id)
+    queue = get_queue_owner(db, user, queue_id)
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(queue, field, value)
     db.commit()

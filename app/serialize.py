@@ -42,6 +42,7 @@ def queue_out(q: Queue):
     return {
         "id": q.id, "project_id": q.project_id, "name": q.name,
         "priority": q.priority, "concurrency_limit": q.concurrency_limit,
+        "rate_limit_per_minute": q.rate_limit_per_minute,
         "paused": q.paused, "retry_policy_id": q.retry_policy_id,
         "created_at": _dt(q.created_at),
     }

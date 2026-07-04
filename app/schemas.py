@@ -37,12 +37,15 @@ class QueueIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     priority: int = Field(0, ge=-100, le=100)
     concurrency_limit: int = Field(10, ge=1, le=1000)
+    rate_limit_per_minute: int = Field(0, ge=0, le=100000,
+        description="Max jobs dispatched per minute (0 = unlimited)")
     retry_policy_id: int | None = None
 
 
 class QueueUpdate(BaseModel):
     priority: int | None = Field(None, ge=-100, le=100)
     concurrency_limit: int | None = Field(None, ge=1, le=1000)
+    rate_limit_per_minute: int | None = Field(None, ge=0, le=100000)
     retry_policy_id: int | None = None
 
 

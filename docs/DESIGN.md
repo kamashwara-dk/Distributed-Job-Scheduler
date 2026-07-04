@@ -1,160 +1,245 @@
-Distributed Job Scheduler — Design Decisions
+# Design Decisions
 
-This document records every major decision and its trade-offs in plain language
-so the design can be understood and defended, not just demonstrated.
+This document records every major decision and its trade-offs in plain language so the design can be understood and defended, not just demonstrated.
 
+---
 
-1. The Problem
+## 1. The Problem
 
-Applications constantly have work that shouldn't happen inside an HTTP
-request: sending emails, generating reports, calling flaky third-party APIs.
-This platform lets an application hand that work off as a job, and takes
-over everything that makes background work hard: making sure each job runs
-exactly one time even with many workers running, retrying failures with
-increasing delays, quarantining jobs that will never succeed, surviving
-worker crashes, and showing operators what's going on.
+Applications constantly have work that shouldn't happen inside an HTTP request: sending emails, generating reports, calling flaky third-party APIs, processing uploads. This platform lets an application hand that work off as a job and takes over everything that makes background work hard:
 
+- Running each job **exactly once**, even with dozens of workers competing
+- **Retrying failures** with configurable backoff strategies
+- **Quarantining** jobs that will never succeed into a dead letter queue
+- **Surviving worker crashes** — a killed worker loses nothing
+- **Controlling throughput** — per-queue rate limits and concurrency caps
+- Giving operators **full visibility** into what's running, what failed, and why
 
-2. Job Lifecycle (the state machine)
+---
 
-SCHEDULED → QUEUED → CLAIMED → RUNNING → COMPLETED | (retry → QUEUED) | DEAD
-plus CANCELLED for user aborts.
+## 2. Job Lifecycle (the state machine)
 
-Why each state exists:
+```
+                   run_at in future
+  create ──────────────────────────► SCHEDULED ──┐
+     │                                           │ (run_at due)
+     └────────────────────────────────────────► QUEUED ◄────────────────────┐
+                                                  │                         │
+                                           atomic claim                 retry with
+                                                  ▼                      backoff
+                                               CLAIMED                      │
+                                                  │                         │
+                                                  ▼            no  ┌────────┴──────┐
+                                               RUNNING ──────────► │ attempts ≥    │
+                                                  │     fail       │ max_attempts? │
+                                             success               └────────┬──────┘
+                                                  ▼                         │ yes
+                                             COMPLETED                    DEAD ──► DLQ
+```
 
-- SCHEDULED — delayed/future jobs. A separate state (not just a future
-  run_at on queued) so backlog metrics can distinguish "waiting on
-  purpose" from "waiting because workers are behind".
-- QUEUED — claimable. The only state workers ever take jobs from.
-- CLAIMED — owned by a worker, not yet started. Deliberately separate from
-  RUNNING: it makes the claim step itself atomic and observable, and lets the
-  reaper distinguish "worker grabbed it then died" from "handler is executing".
-- RUNNING — a handler is executing; a job_executions row (attempt N) is open.
-- COMPLETED / DEAD / CANCELLED — terminal. DEAD additionally snapshots the
-  job into the dead letter queue.
+Plus **CANCELLED** (user aborts a job that hasn't started).
 
-A failed attempt goes back to QUEUED with run_at = now + backoff, so
-retries reuse the exact same claiming machinery as new jobs — one code path,
-not two.
+**Why each state exists:**
 
+- `SCHEDULED` — delayed/future jobs. A separate state (not just a future `run_at` on queued) means backlog metrics can distinguish "waiting on purpose" from "workers are behind".
+- `QUEUED` — the only state workers ever take jobs from. Clean invariant.
+- `CLAIMED` — worker holds the job, handler not yet started. Distinct from `RUNNING` so a worker that dies between claim and start is detectable and recoverable by the reaper.
+- `RUNNING` — a handler is executing; a `job_executions` row is open. The reaper can distinguish a crashed worker from a slow one by checking `claimed_at`.
+- `COMPLETED` / `DEAD` / `CANCELLED` — terminal states. `DEAD` additionally snapshots the job into `dead_letter_jobs`.
 
-3. The Hard Problem: atomic claiming
+A failed attempt goes back to `QUEUED` with `run_at = now + backoff`, so retries reuse the exact same claiming machinery as new jobs. **One code path, not two.**
 
-Requirement: N workers polling the same queue must never execute the same
-job twice.
+---
 
-Chosen mechanism (PostgreSQL): a single UPDATE whose candidate SELECT uses
-FOR UPDATE SKIP LOCKED. Row locks make competing claims disjoint; SKIP LOCKED
-means a worker that loses a race skips to the next row instead of blocking.
-This is the standard Postgres queue pattern (used by Sidekiq-like systems and
-pg-backed queues such as Graphile Worker / Solid Queue).
+## 3. The Hard Problem: Atomic Claiming
 
-SQLite fallback (local dev, tests): SELECT candidates, then per-row
-compare-and-set: UPDATE jobs SET status='claimed', ... WHERE id=? AND
-status='queued'. The WHERE clause re-checks the state, so of two racers
-exactly one sees rowcount == 1. Correct, just O(rows) instead of one statement.
+**Requirement:** N workers polling the same queue must never execute the same job twice.
 
-Verified by: tests/test_claiming.py — 4 threads race over 30 jobs;
-every job claimed exactly once. Also verified live with 2 Docker workers
-(SQL check: no completed job has ≠1 successful execution).
+### PostgreSQL (production)
 
+```sql
+UPDATE jobs
+SET status = 'claimed', claimed_by = :worker, claimed_at = :now
+WHERE id IN (
+    SELECT id FROM jobs
+    WHERE queue_id = :qid AND status = 'queued' AND run_at <= :now
+    ORDER BY priority DESC, run_at ASC
+    LIMIT :n
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING id
+```
 
-4. Coordination through the database — no message broker
+`FOR UPDATE SKIP LOCKED` makes competing claims disjoint — a worker that loses a race skips to the next available row instead of blocking. This is the standard PostgreSQL queue pattern, used by Graphile Worker, Solid Queue, and Sidekiq-PG.
 
-The obvious alternative was Redis/RabbitMQ for the queue. Rejected because:
+### SQLite (local dev / tests)
 
-1. It splits the source of truth (queue state in the broker, history in the
-   DB) and keeping them consistent needs outbox-style machinery.
-2. It's a second stateful service to run, secure, and back up.
-3. At this scale, Postgres row locking already gives contention-free claims.
+SQLite has no `SKIP LOCKED`. Instead:
 
-Costs accepted: workers poll (1s interval) instead of being pushed work, and
-the DB is the eventual scaling bottleneck. Both are fine at project scale;
-the claiming logic is isolated in one module so a broker could replace it
-without touching handlers or the API.
+```python
+# SELECT candidates, then CAS each row
+UPDATE jobs SET status='claimed', ... WHERE id=? AND status='queued'
+# rowcount == 1 means WE won; racers see rowcount == 0
+```
 
+The `WHERE status='queued'` re-check is the compare-and-set. Two racers over the same row: exactly one sees `rowcount == 1`. Correct, just O(candidates) round-trips instead of one statement.
 
-5. Retries and Dead Letter Queue
+**Verified by:** `tests/test_claiming.py` — 4 threads race over 30 jobs; every job is claimed exactly once. Also verified live with 2 Docker workers and a SQL assertion: no completed job has ≠ 1 successful execution.
 
-- Per-project retry policies (strategy + base delay + cap + max retries),
-  attached per queue; jobs also carry max_attempts so a single job can override.
-- Strategies: fixed / linear / exponential (base * 2^(n-1)), all capped by
-  max_delay_s. Exponential is the default: transient failures (rate limits,
-  restarts) usually need more room each time, and the cap stops the wait exploding.
-- After max_attempts, the job goes to DEAD and is snapshotted into
-  dead_letter_jobs (type + payload copied, not referenced — the DLQ must
-  survive job archival). One click / one API call requeues it with attempts reset.
-- Idempotency: clients can pass an idempotency_key; a unique constraint on
-  (queue_id, idempotency_key) makes create-retries safe, enforced by the
-  database rather than application logic.
+---
 
+## 4. Coordination Through the Database — No Message Broker
 
-6. Crash recovery (heartbeats + reaper)
+The classic answer is Redis or RabbitMQ. Rejected for this project because:
 
-Workers heartbeat every 5s. A maintenance tick (run by every worker, 2s
-interval) requeues claimed/running jobs whose worker hasn't heartbeaten for
-30s and marks that worker offline. Design choices:
+1. **Splits the source of truth.** Broker knows the queue; DB knows the history. Keeping them consistent under failures requires outbox-style machinery (transactional outbox pattern) — more complexity, not less.
 
-- The reaper does not increment attempts — the job didn't fail, its worker did.
-  An infrastructure death shouldn't push a job toward the DLQ.
-- Graceful shutdown (SIGTERM) is the complement: stop claiming, drain running
-  handlers (25s grace), deregister. docker compose stop therefore loses
-  nothing, and docker kill loses at most 30s before the reaper recovers.
+2. **Second stateful service.** Another thing to run, monitor, back up, and secure. PostgreSQL's row locking is already present and already reliable.
 
+3. **At this scale, Postgres wins.** `FOR UPDATE SKIP LOCKED` gives correct, contention-free claiming with zero additional infrastructure.
 
-7. Exactly-once cron
+**Costs accepted:**
+- Workers poll (1 s interval) instead of being pushed work
+- The DB is the eventual scaling bottleneck
 
-Every worker runs the scheduler tick, so firing an occurrence must be
-race-safe. Each due scheduled_jobs row is advanced with a compare-and-set
-(UPDATE ... WHERE next_run_at = <the value I read>); only the winner's
-rowcount is 1, and only the winner enqueues the job. No leader election
-needed — the same trick as claiming, applied to time.
+Both are acceptable at this scale. The claiming logic is fully isolated in `services/claiming.py` — swapping in a broker later would not touch handlers, the API, or the lifecycle service.
 
+---
 
-8. API design
+## 5. Retry Strategies and Dead Letter Queue
 
-- REST, resource-nested (/projects/{id}/queues, /queues/{id}/jobs),
-  JWT bearer auth, Pydantic validation on every input.
-- Multi-tenancy: every resource resolves up an ownership chain
-  (job → queue → project → org → membership). Non-members get 404, not
-  403 — a 403 confirms the resource exists; 404 leaks nothing.
-- Uniform error envelope; limit/offset pagination with totals; filtering on
-  the job list (status/type/batch).
-- OpenAPI/Swagger generated from the code at /docs — documentation that can't drift.
+**Per-project retry policies** define: strategy + base delay + cap + max retries. Attached per queue; individual jobs can override `max_attempts`.
 
-
-9. Frontend
-
-Vanilla JS + one CSS file, served statically by the API. No framework because
-the dashboard is a thin read-view with a few actions: the system's actual
-difficulty lives in the backend, and zero build steps keeps the demo unbreakable.
-Live updates via 3s polling — WebSockets were the alternative, but polling is
-stateless, survives reconnects for free, and at demo scale the difference is invisible.
-
-
-10. Decision Ledger
-
-| Decision | Alternative considered | Why this one |
+| Strategy | Formula | When to use |
 |---|---|---|
-| Postgres as queue + SKIP LOCKED | Redis/RabbitMQ broker | one source of truth, transactional transitions, no second stateful service |
-| Separate worker process | background threads in the API | independent scaling/deployment, a wedged handler can't take down the API |
-| Poll-based workers (1s) | LISTEN/NOTIFY push | simpler, portable to SQLite, 1s latency is fine for background jobs |
-| Retry = requeue with future run_at | separate retry queue/table | one claiming code path handles both fresh jobs and retries |
-| DLQ as snapshot table | status flag on jobs only | survives job archival; independent audit + requeue surface |
-| Reaper doesn't burn attempts | count crash as a failed attempt | infra failure ≠ job failure; crashes shouldn't push jobs to DLQ |
-| CAS for cron firing | leader election / singleton scheduler | no coordination service; any worker can die and cron still fires |
-| UUID job ids | auto-increment ints | no sequence coordination across API replicas; non-enumerable in URLs |
-| 404 for cross-tenant access | 403 | existence of other tenants' resources is itself information |
-| Threads per worker | asyncio workers | handlers are sync (sleep/HTTP/CPU); threads keep handler code simple |
-| SQLite fallback path | Postgres-only | zero-setup local run + fast tests; forced the claim logic to be explicit about its atomicity assumptions |
-| create_all at startup | Alembic migrations | project scope; noted as the first thing to add for real production |
+| `fixed` | `base` | Transient errors where time doesn't matter |
+| `linear` | `base × attempt` | Rate-limited APIs where you want steady backoff |
+| `exponential` | `base × 2^(attempt-1)`, capped | Default — transient failures (rate limits, restarts) need more room each time |
 
+**Dead Letter Queue design:**
+- After `max_attempts`, the job status becomes `DEAD` and a `dead_letter_jobs` snapshot is created
+- Snapshot copies `job_type` and `payload` — **not** a reference to `jobs` — so the DLQ survives job archival and is independently auditable
+- One API call (`POST /dlq/{id}/retry`) requeues the job with `attempts = 0`
+- The AI analysis endpoint (`GET /jobs/{id}/analysis`) surfaces likely root cause and recommended action
 
-11. Known limitations
+**Idempotency:** clients can pass `idempotency_key`; a unique DB constraint on `(queue_id, idempotency_key)` makes create-retries safe without application-level deduplication logic.
 
-- No per-job execution timeout enforcement (field exists; enforcing it needs
-  killable handler execution — process pool or async cancellation).
-- Handlers are trusted code registered in the worker image — no sandboxing.
-- Single-database ceiling; sharding by queue is the documented path.
-- Metrics are computed on read; a real deployment would emit to Prometheus.
-- RBAC is membership-only (owner/member roles exist but aren't differentiated).
+---
+
+## 6. Crash Recovery (Heartbeats + Reaper)
+
+Workers heartbeat every **5 seconds**. A maintenance tick (every worker, every 2 s) checks for workers whose last heartbeat was > 30 s ago and requeues their `claimed`/`running` jobs.
+
+**Key design choices:**
+
+- **The reaper does not increment `attempts`.** The job didn't fail — its worker died. An infrastructure death shouldn't push a job toward the DLQ. Attempts count handler failures, not infrastructure failures.
+
+- **Graceful shutdown** (`SIGTERM`) is the complement: stop claiming, drain running handlers (25 s grace window), then mark offline. `docker compose stop` therefore loses nothing; `docker kill` (or an OOM) loses at most 30 s before the reaper recovers.
+
+- **Every worker runs maintenance**, not a designated leader. No leader election needed — both operations (reaping + cron) are CAS-guarded, so racing workers produce the same result.
+
+---
+
+## 7. Exactly-Once Cron
+
+Every worker runs the scheduler tick, so materializing a cron occurrence must be race-safe:
+
+```python
+# CAS: only the winner's rowcount is 1
+UPDATE scheduled_jobs
+SET next_run_at = <next>, last_enqueued_at = <now>
+WHERE id = :id AND next_run_at = <the value I read>
+```
+
+Only the worker whose `next_run_at` still matches the value it read wins the race and enqueues the job. Others see `rowcount = 0` and skip. No leader election, no distributed lock — the same trick as job claiming, applied to time advancement.
+
+---
+
+## 8. Rate Limiting
+
+Per-queue **sliding window** rate limit:
+
+```python
+# Reject if ≥ rate_limit_per_minute jobs were created in the last 60 s
+recent = COUNT(*) FROM jobs WHERE queue_id=? AND created_at >= now()-60s
+if recent >= limit: raise HTTP 429
+```
+
+Why a sliding window over a fixed window:
+- Fixed windows allow bursts at boundaries (e.g., 100 jobs at 00:59 and 100 more at 01:00)
+- A sliding 60-second window provides a smoother rate guarantee
+- Implementation is a single SQL aggregate — no Redis, no token bucket state
+
+`rate_limit_per_minute = 0` disables the check entirely (default).
+
+---
+
+## 9. RBAC
+
+Two roles within each organization:
+
+| Role | Structural ops | Operational ops |
+|---|---|---|
+| `owner` | ✅ create/update/delete queues, projects, schedules, retry policies | ✅ all of member |
+| `member` | ❌ | ✅ create/cancel jobs, pause/resume queues, retry DLQ, view everything |
+
+Role is stored on `org_members.role`. The `require_owner()` function in `access.py` raises **403** (not 404) when an authenticated member tries an owner-only operation — because at that point the resource's existence is already established.
+
+---
+
+## 10. WebSocket Live Feed
+
+The dashboard uses a dual-track update strategy:
+- **REST polling** every 3 s for full table data (jobs, queues, workers)
+- **WebSocket push** every 2 s for the lightweight metrics snapshot (status counts, worker count)
+
+The WebSocket endpoint authenticates via `?token=<jwt>` query param because browser WebSocket APIs cannot set custom headers. Connection closes with code `4001` on invalid or missing tokens.
+
+---
+
+## 11. AI Failure Analysis
+
+The analysis endpoint (`GET /jobs/{id}/analysis`) provides structured root-cause diagnosis using **deterministic pattern matching** against the job's error messages and log lines.
+
+Benefits over an LLM API call:
+- Zero latency (no network hop), zero cost, works offline
+- Deterministic — same error always gets the same category
+- No data leaves the system — job payloads and errors may contain PII
+
+Pattern categories: `network_connectivity`, `timeout`, `rate_limited`, `auth_failure`, `upstream_error`, `data_format`, `resource_exhaustion`, `misconfiguration`, `simulated_failure`, `unknown`.
+
+The endpoint also computes retry trend (escalating / stable / no_retries) from execution timestamps, giving operators an at-a-glance picture of whether backoff is working.
+
+---
+
+## 12. Decision Ledger
+
+| Decision | Alternative | Why this one |
+|---|---|---|
+| Postgres + `SKIP LOCKED` | Redis/RabbitMQ | One source of truth, transactional transitions, no second stateful service |
+| Separate worker process | Background threads in API | Independent scaling; a wedged handler can't take down the API |
+| Poll-based workers (1 s) | `LISTEN/NOTIFY` push | Simpler, portable to SQLite, 1 s latency is fine for background jobs |
+| Retry = requeue with future `run_at` | Separate retry table | One claiming code path handles both new jobs and retries |
+| DLQ as snapshot table | Status flag on `jobs` | Survives job archival; independent audit + requeue surface |
+| Reaper doesn't burn attempts | Count crash as failure | Infrastructure failure ≠ job failure; crashes shouldn't push jobs to DLQ |
+| CAS for cron firing | Leader election | No coordination service; any worker can die and cron still fires |
+| UUID PKs for jobs + workers | Auto-increment ints | No sequence coordination across replicas; non-enumerable in URLs |
+| 404 for cross-tenant access | 403 | 403 confirms the resource exists — existence is itself information |
+| Sliding window rate limit | Redis token bucket | No additional infrastructure; one SQL aggregate |
+| Pattern matching for AI analysis | LLM API | Zero latency, zero cost, offline, deterministic, no data egress |
+| `create_all` at startup | Alembic migrations | Project scope; noted as first change for real production |
+| Threads per worker | `asyncio` workers | Handlers are sync (I/O-bound); threads keep handler code simple |
+| Vanilla JS dashboard | React/Vue | Zero build step, unbreakable demo, the complexity lives in the backend |
+
+---
+
+## 13. Known Limitations and Next Steps
+
+| Limitation | Mitigation / Next step |
+|---|---|
+| No per-job execution timeout enforcement | Field exists; enforcing requires killable execution (process pool or `asyncio.wait_for`) |
+| Handlers are trusted code in the worker image | Sandboxing with a subprocess or microVM boundary |
+| Single-database ceiling | Shard by queue — `queue_id` is the natural shard key; claiming logic is isolated |
+| Metrics computed on read | Emit to Prometheus/OpenTelemetry; use pre-aggregated counters |
+| `create_all` instead of Alembic | Add Alembic for schema migration tracking |
+| No workflow dependencies (job A waits for job B) | Add a `depends_on` field + a scheduler tick to unblock waiting jobs |

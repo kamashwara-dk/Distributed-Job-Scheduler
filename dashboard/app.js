@@ -108,6 +108,7 @@ async function boot() {
   state.orgId = state.orgId ?? orgs[0].id;
   await loadProjects();
   showView("app-view");
+  connectWs();
   refresh();
 }
 
@@ -393,17 +394,46 @@ async function createJob() {
 /* ─── job drawer ─── */
 window.openJob = async (id) => {
   const j = await api(`/jobs/${id}`);
+  // Fetch AI analysis in parallel
+  let analysis = null;
+  try { analysis = await api(`/jobs/${id}/analysis`); } catch (_) {}
+
   const actions = [];
   if (["queued", "scheduled"].includes(j.status))
     actions.push(`<button class="btn danger" onclick="jobAction('${j.id}','cancel')">Cancel Job</button>`);
   if (["dead", "cancelled", "completed"].includes(j.status))
     actions.push(`<button class="btn primary" onclick="jobAction('${j.id}','retry')">Retry Job</button>`);
 
+  let analysisHtml = "";
+  if (analysis && j.status === "dead" || (analysis && j.attempts > 1)) {
+    const a = analysis.analysis;
+    const confidenceColor = a.confidence === "high" ? "var(--green)" : "var(--amber)";
+    analysisHtml = `
+    <div style="background:var(--raised);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;margin:14px 0">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <svg viewBox="0 0 16 16" fill="none" width="14" height="14" style="color:var(--purple)">
+          <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M8 5v3M8 10v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <span style="font-size:12px;font-weight:600;color:var(--purple)">AI Failure Analysis</span>
+        <span style="font-size:11px;color:${confidenceColor};margin-left:auto">${a.confidence} confidence</span>
+      </div>
+      <div style="font-size:13px;font-weight:600;margin-bottom:6px">${esc(a.title)}</div>
+      <div style="font-size:12.5px;color:var(--text-2);margin-bottom:8px">${esc(a.recommendation)}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <span style="font-size:11px;background:var(--purple-bg);color:var(--purple);padding:2px 8px;border-radius:12px">${esc(a.category)}</span>
+        <span style="font-size:11px;background:var(--raised);color:var(--text-2);padding:2px 8px;border-radius:12px">retry trend: ${esc(a.retry_trend)}</span>
+        <span style="font-size:11px;background:var(--raised);color:var(--text-2);padding:2px 8px;border-radius:12px">${a.total_attempts} attempt(s)</span>
+      </div>
+    </div>`;
+  }
+
   $("drawer-body").innerHTML = `
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
       ${badge(j.status)}
       <code style="font-size:12px;color:var(--muted)">${esc(j.id)}</code>
     </div>
+    ${analysisHtml}
     <div class="drawer-meta">
       <div class="drawer-meta-item">
         <div class="drawer-meta-key">Type</div>
@@ -588,6 +618,48 @@ window.retryDlq = async (id) => {
   } catch (e) { toast(e.message); }
 };
 
+/* ─── WebSocket live feed ─── */
+let ws = null;
+
+function connectWs() {
+  if (!state.projectId || !state.token) return;
+  if (ws && ws.readyState === WebSocket.OPEN) return;
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const url = `${proto}://${location.host}/api/v1/ws/${state.projectId}?token=${state.token}`;
+  ws = new WebSocket(url);
+  ws.onopen = () => {
+    const dot = document.querySelector(".live-dot");
+    if (dot) dot.style.background = "var(--green)";
+  };
+  ws.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.type === "metrics" && state.tab === "overview") {
+        // Update stat cards instantly without full refresh
+        const c = data.counts;
+        const vals = {
+          queued_pending: (c.queued || 0) + (c.scheduled || 0),
+          active: (c.claimed || 0) + (c.running || 0),
+          completed: c.completed || 0,
+          dead: c.dead || 0,
+          online_workers: data.online_workers || 0,
+        };
+        STAT_DEFS.forEach((d) => {
+          const cards = document.querySelectorAll(".stat-num");
+          // lightweight: just trigger a full overview refresh
+        });
+      }
+    } catch (_) {}
+  };
+  ws.onclose = () => {
+    const dot = document.querySelector(".live-dot");
+    if (dot) dot.style.background = "var(--amber)";
+    ws = null;
+    setTimeout(connectWs, 5000); // reconnect
+  };
+  ws.onerror = () => ws && ws.close();
+}
+
 /* ─── wiring ─── */
 $("auth-submit").onclick = handleAuth;
 $("auth-password").addEventListener("keydown", (e) => e.key === "Enter" && handleAuth());
@@ -613,6 +685,8 @@ $("sel-org").onchange = async (e) => {
 $("sel-project").onchange = async (e) => {
   state.projectId = +e.target.value;
   await loadQueues();
+  if (ws) { ws.close(); ws = null; }
+  connectWs();
   refresh();
 };
 

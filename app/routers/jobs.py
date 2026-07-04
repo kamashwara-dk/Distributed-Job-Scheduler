@@ -1,12 +1,12 @@
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.access import get_job, get_queue
 from app.database import get_db
-from app.models import Job, JobLog, JobStatus, User, new_id, utcnow
+from app.models import Job, JobLog, JobStatus, Queue, User, new_id, utcnow
 from app.pagination import PageParams, paginate
 from app.schemas import BatchIn, JobIn
 from app.security import get_current_user
@@ -14,6 +14,27 @@ from app.serialize import execution_out, job_out, log_out
 from app.services.lifecycle import add_log, retry_terminal_job
 
 router = APIRouter(tags=["jobs"])
+
+
+def _enforce_rate_limit(db: Session, queue: Queue) -> None:
+    """Token-bucket check: reject if more than rate_limit_per_minute jobs were
+    created in the last 60 seconds. rate_limit_per_minute=0 means unlimited."""
+    if not queue.rate_limit_per_minute:
+        return
+    since = utcnow() - timedelta(seconds=60)
+    recent = db.scalar(
+        select(func.count()).select_from(Job).where(
+            Job.queue_id == queue.id,
+            Job.created_at >= since,
+        )
+    )
+    if recent >= queue.rate_limit_per_minute:
+        raise HTTPException(
+            429,
+            f"Rate limit exceeded: queue '{queue.name}' allows "
+            f"{queue.rate_limit_per_minute} job(s) per minute "
+            f"(currently {recent} in the last 60s)",
+        )
 
 
 def _build_job(queue_id: int, body: JobIn) -> Job:
@@ -36,13 +57,14 @@ def _build_job(queue_id: int, body: JobIn) -> Job:
              summary="Create a job (immediate, delayed via delay_s, or scheduled via run_at)")
 def create_job(queue_id: int, body: JobIn,
                user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    get_queue(db, user, queue_id)
+    queue = get_queue(db, user, queue_id)
     if body.idempotency_key:
         existing = db.scalar(select(Job).where(
             Job.queue_id == queue_id, Job.idempotency_key == body.idempotency_key
         ))
         if existing:  # idempotent create: return the original, don't duplicate
             return job_out(existing)
+    _enforce_rate_limit(db, queue)
     job = _build_job(queue_id, body)
     db.add(job)
     db.flush()
@@ -55,7 +77,8 @@ def create_job(queue_id: int, body: JobIn,
              summary="Create a batch of jobs sharing one batch_id")
 def create_batch(queue_id: int, body: BatchIn,
                  user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    get_queue(db, user, queue_id)
+    queue = get_queue(db, user, queue_id)
+    _enforce_rate_limit(db, queue)
     batch_id = new_id()
     jobs = []
     for item in body.jobs:
