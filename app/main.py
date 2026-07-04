@@ -21,7 +21,10 @@ log = logging.getLogger("api")
 async def lifespan(app: FastAPI):
     # create_all is idempotent; fine for this project's scope.
     # A production deployment would use Alembic migrations instead.
-    Base.metadata.create_all(bind=engine)
+    try:
+        Base.metadata.create_all(bind=engine)
+    except Exception as e:
+        log.error("Failed to create database tables: %s", e)
     yield
 
 
