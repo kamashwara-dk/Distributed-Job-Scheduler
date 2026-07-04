@@ -20,6 +20,8 @@
     }
   ],
   "env": {
-    "VERCEL": "1"
+    "VERCEL": "1",
+    "DATABASE_URL": "sqlite:///:memory:",
+    "SECRET_KEY": "vercel-demo-secret-jobforge-2026"
   }
 }
