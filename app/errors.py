@@ -2,6 +2,7 @@
 # {"error": {"code": ..., "message": ..., "details": ...}}
 
 import logging
+import os
 import traceback
 
 from fastapi import FastAPI, Request
@@ -21,6 +22,9 @@ _CODES = {
     429: "rate_limited",
     500: "internal_error",
 }
+
+# In production (DEBUG=0), hide internal error details from clients.
+_DEBUG = os.environ.get("DEBUG", "0") not in ("0", "false", "False", "")
 
 
 def install_error_handlers(app: FastAPI) -> None:
@@ -59,13 +63,16 @@ def install_error_handlers(app: FastAPI) -> None:
             exc,
             traceback.format_exc(),
         )
+        # Never leak internal details (stack traces, variable names, file paths)
+        # to clients in production. Only expose in DEBUG mode.
+        details = str(exc) if _DEBUG else None
         return JSONResponse(
             status_code=500,
             content={
                 "error": {
                     "code": "internal_error",
                     "message": "Internal server error",
-                    "details": str(exc),
+                    "details": details,
                 }
             },
         )

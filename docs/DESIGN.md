@@ -235,11 +235,17 @@ The endpoint also computes retry trend (escalating / stable / no_retries) from e
 
 ## 13. Known Limitations and Next Steps
 
-| Limitation | Mitigation / Next step |
+| Limitation | Mitigation / Status |
 |---|---|
-| No per-job execution timeout enforcement | Field exists; enforcing requires killable execution (process pool or `asyncio.wait_for`) |
+| Per-job execution timeout | **Implemented**: enforced via `concurrent.futures.Future.result(timeout=)` in `worker/runner.py`. A timed-out job is failed and retried with the queue's backoff policy. |
+| Batch rate limiting bypass | **Fixed**: `create_batch` checks `recent + len(body.jobs) > limit`, not just `recent >= limit`. |
 | Handlers are trusted code in the worker image | Sandboxing with a subprocess or microVM boundary |
 | Single-database ceiling | Shard by queue — `queue_id` is the natural shard key; claiming logic is isolated |
-| Metrics computed on read | Emit to Prometheus/OpenTelemetry; use pre-aggregated counters |
-| `create_all` instead of Alembic | Add Alembic for schema migration tracking |
+| Metrics computed on read | **Improved**: throughput binning uses DB-side `GROUP BY` instead of pulling all timestamps to Python. Emit to Prometheus/OpenTelemetry for production-grade observability. |
+| `create_all` instead of Alembic | Add Alembic for schema migration tracking — first change for real production |
 | No workflow dependencies (job A waits for job B) | Add a `depends_on` field + a scheduler tick to unblock waiting jobs |
+| Internal error details leaked in 500 responses | **Fixed**: `str(exc)` only included in `details` when `DEBUG=1`; scrubbed in production |
+| Default `SECRET_KEY` deployed silently | **Fixed**: startup warning emitted whenever the dev-only default is detected |
+| `Session.bind` deprecated in SQLAlchemy 2.x | **Fixed**: `claiming.py` now uses `db.get_bind().dialect.name` |
+| Org members could not be invited | **Implemented**: `POST /orgs/{id}/members`, `GET /orgs/{id}/members`, `DELETE /orgs/{id}/members/{user_id}` |
+| WebSocket `onmessage` dropped data | **Fixed**: stat cards updated directly from WebSocket push payload |

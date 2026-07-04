@@ -83,7 +83,23 @@ def create_job(queue_id: int, body: JobIn,
 def create_batch(queue_id: int, body: BatchIn,
                  user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     queue = get_queue(db, user, queue_id)
-    _enforce_rate_limit(db, queue)
+    # Rate-limit check accounts for the entire batch size, not just one job.
+    # We temporarily patch the limit check by comparing recent + len(body.jobs).
+    if queue.rate_limit_per_minute:
+        since = utcnow() - timedelta(seconds=60)
+        recent = db.scalar(
+            select(func.count()).select_from(Job).where(
+                Job.queue_id == queue_id,
+                Job.created_at >= since,
+            )
+        )
+        if recent + len(body.jobs) > queue.rate_limit_per_minute:
+            raise HTTPException(
+                429,
+                f"Rate limit exceeded: adding {len(body.jobs)} jobs would exceed "
+                f"the queue limit of {queue.rate_limit_per_minute} per minute "
+                f"(currently {recent} in the last 60 s).",
+            )
     batch_id = new_id()
     jobs = []
     for item in body.jobs:

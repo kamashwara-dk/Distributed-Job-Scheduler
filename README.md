@@ -8,16 +8,17 @@ A **production-inspired distributed job scheduling platform** built with FastAPI
 
 | Category | Features |
 |---|---|
-| **Auth & Multi-tenancy** | JWT auth · bcrypt passwords · Organizations → Projects hierarchy · RBAC (owner / member roles) · Cross-tenant 404 isolation |
-| **Queue Management** | Priority queues · Concurrency limits · Per-queue rate limiting (sliding window) · Pause / Resume · Retry policy attachment |
+| **Auth & Multi-tenancy** | JWT auth · bcrypt passwords · Organizations → Projects hierarchy · RBAC (owner / member roles) · Cross-tenant 404 isolation · Org member invite/remove API |
+| **Queue Management** | Priority queues · Concurrency limits · Per-queue rate limiting (sliding window, batch-aware) · Pause / Resume · Retry policy attachment · Rate limit shown in dashboard |
 | **Job Types** | Immediate · Delayed (`delay_s`) · Scheduled (`run_at`) · Recurring cron · Batch (up to 500 per request) · Idempotent creation |
 | **Job Lifecycle** | `QUEUED → CLAIMED → RUNNING → COMPLETED` with full state machine, per-attempt execution history, and structured logs |
 | **Retry Strategies** | Fixed · Linear · Exponential backoff — all capped, all per-queue configurable |
-| **Reliability** | Atomic claiming (`FOR UPDATE SKIP LOCKED` / SQLite CAS) · Exactly-once cron (CAS on `next_run_at`) · Crash recovery (heartbeats + reaper, no attempt burned) · Graceful shutdown (SIGTERM drain) |
+| **Reliability** | Atomic claiming (`FOR UPDATE SKIP LOCKED` / SQLite CAS) · Exactly-once cron (CAS on `next_run_at`) · Crash recovery (heartbeats + reaper, no attempt burned) · Graceful shutdown (SIGTERM drain) · `timeout_s` enforcement via concurrent future deadline |
 | **Dead Letter Queue** | Permanent failures snapshotted independently · One-click requeue via API or dashboard |
-| **Observability** | Live dashboard (WebSocket feed + REST polling) · Per-queue stats · 30-min throughput chart · Worker heartbeat monitoring · AI failure analysis |
+| **Observability** | Live dashboard (WebSocket push updates stat cards + REST polling) · Per-queue stats · 30-min throughput chart (DB-side binning) · Worker heartbeat monitoring · AI failure analysis · `stopping` worker status |
 | **API** | 30+ REST endpoints · Pydantic validation · Uniform error envelope · Pagination · Filtering · Interactive Swagger at `/docs` |
-| **Testing** | 24 tests — race-condition atomicity, retry math, lifecycle transitions, DLQ, auth, tenancy, idempotency, pagination |
+| **Security** | Internal error details scrubbed from 500 responses in production · Startup warning when default SECRET_KEY is detected |
+| **Testing** | 39 tests — race-condition atomicity, retry math, lifecycle transitions, DLQ, auth, tenancy, idempotency, pagination, analysis endpoint, batch rate limit, timeout enforcement, org membership |
 
 ---
 
@@ -182,6 +183,12 @@ python -m pytest tests/ -v
 - Idempotency key deduplication
 - Batch job creation and batch_id filtering
 - Pagination, queue pause/resume, cron validation
+- AI failure analysis endpoint (category, confidence, recommendation)
+- Batch rate limiting (entire batch size vs. limit, not just 1 check)
+- `timeout_s` enforcement (long-running handler killed within deadline)
+- Org member invite/remove (404, 409, 403 RBAC enforcement)
+- Worker `stopping` and `offline` status serialization
+- Metrics overview shape and throughput bucket count
 
 ---
 
@@ -210,5 +217,21 @@ Copy `.env.example` to `.env` and update values for local development.
 | Exactly-once cron | CAS on `scheduled_jobs.next_run_at`; only one worker wins per tick |
 | Dead letter queue | Permanent failures snapshotted, independently requeueable |
 | Idempotent job creation | Unique `(queue_id, idempotency_key)` DB constraint |
-| Rate limiting | 60 s sliding window count; 429 on breach; no external state |
+| Rate limiting (single + batch) | 60 s sliding window; batch checked against full batch size; 429 on breach |
 | Graceful shutdown | SIGTERM → drain running jobs → deregister; `docker compose stop` loses nothing |
+| Execution timeout | `timeout_s` enforced via concurrent future; timed-out job fails and retries |
+| Secret key safety | Startup warning if default dev key is detected in a non-Vercel environment |
+| Production error safety | Internal stack traces scrubbed from 500 responses unless `DEBUG=1` |
+
+---
+
+## PostgreSQL Setup Note
+
+The `psycopg` driver is required when `DATABASE_URL` points to PostgreSQL (Docker or self-hosted).
+It is intentionally omitted from `requirements.txt` for Vercel compatibility. To install it:
+
+```bash
+pip install "psycopg[binary]>=3.1"
+```
+
+Or uncomment the line in `requirements.txt` before building your Docker image.

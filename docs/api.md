@@ -103,6 +103,31 @@ List organizations the current user is a member of.
 
 ---
 
+### `POST /orgs/{org_id}/members`
+Invite an existing user to the organization. **Owner only.**
+
+**Body:** `{ "email": "colleague@company.com", "role": "member" }` — `role` is `"owner"` or `"member"`.
+
+**Response 201:** `{ "org_id": 1, "user_id": 2, "email": "colleague@company.com", "role": "member" }`
+
+**Errors:** 404 if no user with that email exists · 409 if already a member · 422 if role is invalid.
+
+---
+
+### `GET /orgs/{org_id}/members`
+List all members of an organization.
+
+**Response:** `{ "items": [{ "user_id": 1, "email": "...", "name": "...", "role": "owner" }, ...] }`
+
+---
+
+### `DELETE /orgs/{org_id}/members/{user_id}`
+Remove a member from the organization. **Owner only.** Cannot remove yourself.
+
+**Response:** 204 No Content.
+
+---
+
 ### `POST /orgs/{org_id}/projects`
 Create a project inside an org. **Owner only.**
 
