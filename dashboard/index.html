@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JobForge — Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ============ AUTH VIEW ============ -->
+<div id="auth-view" class="auth-wrap hidden">
+  <div class="auth-bg">
+    <div class="auth-bg-orb orb-1"></div>
+    <div class="auth-bg-orb orb-2"></div>
+    <div class="auth-bg-orb orb-3"></div>
+  </div>
+  <div class="auth-card">
+    <div class="auth-logo">
+      <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+        <rect width="36" height="36" rx="10" fill="url(#logo-grad)"/>
+        <path d="M10 18l5 5 11-11" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <defs>
+          <linearGradient id="logo-grad" x1="0" y1="0" x2="36" y2="36">
+            <stop stop-color="#6366f1"/>
+            <stop offset="1" stop-color="#8b5cf6"/>
+          </linearGradient>
+        </defs>
+      </svg>
+      <span class="auth-logo-text">JobForge</span>
+    </div>
+    <h2 class="auth-title">Welcome back</h2>
+    <p class="auth-subtitle">Sign in to your workspace</p>
+    <div id="auth-error" class="error-box hidden"></div>
+    <div class="field-group">
+      <div class="field hidden" id="field-name">
+        <label class="field-label">Full name</label>
+        <input id="auth-name" placeholder="John Doe" autocomplete="name">
+      </div>
+      <div class="field">
+        <label class="field-label">Email address</label>
+        <input id="auth-email" type="email" placeholder="you@company.com" autocomplete="email">
+      </div>
+      <div class="field">
+        <label class="field-label">Password</label>
+        <input id="auth-password" type="password" placeholder="••••••••" autocomplete="current-password">
+      </div>
+    </div>
+    <button id="auth-submit" class="btn primary full-width">Sign in</button>
+    <p class="auth-switch">
+      <span id="auth-toggle-label">Don't have an account?</span>
+      <a href="#" id="auth-toggle">Create one</a>
+    </p>
+  </div>
+</div>
+
+<!-- ============ ONBOARDING ============ -->
+<div id="setup-view" class="auth-wrap hidden">
+  <div class="auth-bg">
+    <div class="auth-bg-orb orb-1"></div>
+    <div class="auth-bg-orb orb-2"></div>
+  </div>
+  <div class="auth-card">
+    <div class="auth-logo">
+      <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+        <rect width="36" height="36" rx="10" fill="url(#logo-grad2)"/>
+        <path d="M10 18l5 5 11-11" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <defs>
+          <linearGradient id="logo-grad2" x1="0" y1="0" x2="36" y2="36">
+            <stop stop-color="#6366f1"/>
+            <stop offset="1" stop-color="#8b5cf6"/>
+          </linearGradient>
+        </defs>
+      </svg>
+      <span class="auth-logo-text">JobForge</span>
+    </div>
+    <h2 class="auth-title">Set up your workspace</h2>
+    <p class="auth-subtitle">Create your organization and first project to get started.</p>
+    <div class="field-group">
+      <div class="field">
+        <label class="field-label">Organization name</label>
+        <input id="setup-org" placeholder="Acme Corp" value="My Organization">
+      </div>
+      <div class="field">
+        <label class="field-label">Project name</label>
+        <input id="setup-project" placeholder="Production" value="Default Project">
+      </div>
+    </div>
+    <button id="setup-submit" class="btn primary full-width">Create workspace</button>
+  </div>
+</div>
+
+<!-- ============ MAIN APP ============ -->
+<div id="app-view" class="hidden app-layout">
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <div class="brand-mark">
+        <svg width="28" height="28" viewBox="0 0 36 36" fill="none">
+          <rect width="36" height="36" rx="9" fill="url(#sb-grad)"/>
+          <path d="M10 18l5 5 11-11" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <defs>
+            <linearGradient id="sb-grad" x1="0" y1="0" x2="36" y2="36">
+              <stop stop-color="#6366f1"/>
+              <stop offset="1" stop-color="#8b5cf6"/>
+            </linearGradient>
+          </defs>
+        </svg>
+        <span class="brand-name">JobForge</span>
+      </div>
+    </div>
+
+    <div class="sidebar-selectors">
+      <div class="selector-group">
+        <label class="selector-label">Organization</label>
+        <select id="sel-org" class="selector-select" title="Organization"></select>
+      </div>
+      <div class="selector-group">
+        <label class="selector-label">Project</label>
+        <select id="sel-project" class="selector-select" title="Project"></select>
+      </div>
+    </div>
+
+    <nav class="sidebar-nav">
+      <span class="nav-section-label">Navigation</span>
+      <button class="nav-item active" data-tab="overview">
+        <svg class="nav-icon" viewBox="0 0 20 20" fill="none">
+          <rect x="2" y="2" width="7" height="7" rx="1.5" fill="currentColor"/>
+          <rect x="11" y="2" width="7" height="7" rx="1.5" fill="currentColor" opacity=".5"/>
+          <rect x="2" y="11" width="7" height="7" rx="1.5" fill="currentColor" opacity=".5"/>
+          <rect x="11" y="11" width="7" height="7" rx="1.5" fill="currentColor" opacity=".5"/>
+        </svg>
+        Overview
+      </button>
+      <button class="nav-item" data-tab="queues">
+        <svg class="nav-icon" viewBox="0 0 20 20" fill="none">
+          <path d="M3 5h14M3 10h14M3 15h8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+        Queues
+      </button>
+      <button class="nav-item" data-tab="jobs">
+        <svg class="nav-icon" viewBox="0 0 20 20" fill="none">
+          <rect x="3" y="3" width="14" height="14" rx="2" stroke="currentColor" stroke-width="1.8"/>
+          <path d="M7 10l2.5 2.5L13 7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Jobs
+      </button>
+      <button class="nav-item" data-tab="schedules">
+        <svg class="nav-icon" viewBox="0 0 20 20" fill="none">
+          <circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="1.8"/>
+          <path d="M10 6v4l2.5 2.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+        Schedules
+      </button>
+      <button class="nav-item" data-tab="workers">
+        <svg class="nav-icon" viewBox="0 0 20 20" fill="none">
+          <circle cx="7" cy="7" r="3" stroke="currentColor" stroke-width="1.8"/>
+          <circle cx="13" cy="7" r="3" stroke="currentColor" stroke-width="1.8" opacity=".5"/>
+          <path d="M1 17c0-2.761 2.686-5 6-5s6 2.239 6 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+        Workers
+      </button>
+      <button class="nav-item" data-tab="dlq">
+        <svg class="nav-icon" viewBox="0 0 20 20" fill="none">
+          <path d="M10 3l7 14H3L10 3z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+          <path d="M10 8v4M10 14.5v.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+        Dead Letters
+        <span class="nav-badge" id="dlq-count"></span>
+      </button>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="user-chip">
+        <div class="user-avatar" id="user-avatar">U</div>
+        <span id="user-name" class="user-display-name">User</span>
+      </div>
+      <button id="btn-logout" class="btn icon-btn" title="Sign out">
+        <svg viewBox="0 0 20 20" fill="none" width="16" height="16">
+          <path d="M13 7l3 3-3 3M16 10H8M8 3H5a1 1 0 00-1 1v12a1 1 0 001 1h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>
+  </aside>
+
+  <!-- Main content -->
+  <div class="main-area">
+    <header class="topbar">
+      <div class="topbar-title" id="topbar-title">Overview</div>
+      <div class="topbar-right">
+        <div class="live-indicator">
+          <span class="live-dot"></span>
+          <span class="live-label">Live</span>
+        </div>
+      </div>
+    </header>
+
+    <main class="content">
+
+      <!-- Overview -->
+      <section id="tab-overview" class="tab-panel">
+        <div id="stat-cards" class="stat-grid"></div>
+        <div class="content-grid-2">
+          <div class="panel panel-chart">
+            <div class="panel-header">
+              <div>
+                <h3 class="panel-title">Throughput</h3>
+                <p class="panel-subtitle">Completed jobs / minute · last 30 min</p>
+              </div>
+            </div>
+            <canvas id="chart"></canvas>
+          </div>
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h3 class="panel-title">Queue Backlog</h3>
+                <p class="panel-subtitle">Pending jobs per queue</p>
+              </div>
+            </div>
+            <div id="queue-health"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Queues -->
+      <section id="tab-queues" class="tab-panel hidden">
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h3 class="panel-title">Create Queue</h3>
+              <p class="panel-subtitle">Add a new job queue to this project</p>
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label class="field-label">Queue name</label>
+              <input id="q-name" placeholder="e.g. email-delivery">
+            </div>
+            <div class="field">
+              <label class="field-label">Priority</label>
+              <input id="q-priority" type="number" value="0" placeholder="0">
+            </div>
+            <div class="field">
+              <label class="field-label">Concurrency limit</label>
+              <input id="q-concurrency" type="number" value="5" placeholder="5">
+            </div>
+            <div class="field field-action">
+              <label class="field-label">&nbsp;</label>
+              <button id="q-create" class="btn primary">
+                <svg viewBox="0 0 16 16" fill="none" width="14" height="14">
+                  <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+                Create Queue
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header">
+            <h3 class="panel-title">All Queues</h3>
+          </div>
+          <div id="queues-table"></div>
+        </div>
+      </section>
+
+      <!-- Jobs -->
+      <section id="tab-jobs" class="tab-panel hidden">
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h3 class="panel-title">Enqueue Job</h3>
+              <p class="panel-subtitle">Dispatch a new job to a queue</p>
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label class="field-label">Queue</label>
+              <select id="j-queue"></select>
+            </div>
+            <div class="field">
+              <label class="field-label">Job type</label>
+              <select id="j-type">
+                <option>send_email</option>
+                <option>sleep</option>
+                <option>generate_report</option>
+                <option>http_request</option>
+                <option>flaky</option>
+                <option>always_fail</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label">Priority</label>
+              <input id="j-priority" type="number" value="0" placeholder="0">
+            </div>
+            <div class="field">
+              <label class="field-label">Delay (seconds)</label>
+              <input id="j-delay" type="number" value="0" placeholder="0">
+            </div>
+          </div>
+          <div class="field" style="margin-top: 12px;">
+            <label class="field-label">Payload (JSON)</label>
+            <textarea id="j-payload" rows="3" spellcheck="false">{"to": "user@example.com", "subject": "Hello"}</textarea>
+          </div>
+          <div style="margin-top: 12px;">
+            <button id="j-create" class="btn primary">
+              <svg viewBox="0 0 16 16" fill="none" width="14" height="14">
+                <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Enqueue Job
+            </button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <h3 class="panel-title">Job List</h3>
+            <div class="panel-controls">
+              <select id="jf-queue" class="select-sm"></select>
+              <select id="jf-status" class="select-sm">
+                <option value="">All statuses</option>
+                <option>queued</option>
+                <option>scheduled</option>
+                <option>claimed</option>
+                <option>running</option>
+                <option>completed</option>
+                <option>dead</option>
+                <option>cancelled</option>
+              </select>
+              <div class="pagination-controls">
+                <button id="jobs-prev" class="btn ghost icon-btn">
+                  <svg viewBox="0 0 16 16" fill="none" width="14" height="14"><path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+                <span id="jobs-page" class="pagination-info"></span>
+                <button id="jobs-next" class="btn ghost icon-btn">
+                  <svg viewBox="0 0 16 16" fill="none" width="14" height="14"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+          <div id="jobs-table"></div>
+        </div>
+      </section>
+
+      <!-- Schedules -->
+      <section id="tab-schedules" class="tab-panel hidden">
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h3 class="panel-title">Create Schedule</h3>
+              <p class="panel-subtitle">Recurring cron-based job trigger</p>
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label class="field-label">Queue</label>
+              <select id="s-queue"></select>
+            </div>
+            <div class="field">
+              <label class="field-label">Schedule name</label>
+              <input id="s-name" placeholder="daily-report">
+            </div>
+            <div class="field">
+              <label class="field-label">Cron expression</label>
+              <input id="s-cron" placeholder="*/2 * * * *" class="mono-input">
+            </div>
+            <div class="field">
+              <label class="field-label">Job type</label>
+              <select id="s-type">
+                <option>send_email</option>
+                <option>sleep</option>
+                <option>generate_report</option>
+              </select>
+            </div>
+            <div class="field field-action">
+              <label class="field-label">&nbsp;</label>
+              <button id="s-create" class="btn primary">
+                <svg viewBox="0 0 16 16" fill="none" width="14" height="14">
+                  <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+                Create Schedule
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header">
+            <h3 class="panel-title">Active Schedules</h3>
+          </div>
+          <div id="schedules-table"></div>
+        </div>
+      </section>
+
+      <!-- Workers -->
+      <section id="tab-workers" class="tab-panel hidden">
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h3 class="panel-title">Worker Nodes</h3>
+              <p class="panel-subtitle">Registered workers and their current state</p>
+            </div>
+          </div>
+          <div id="workers-table"></div>
+        </div>
+      </section>
+
+      <!-- DLQ -->
+      <section id="tab-dlq" class="tab-panel hidden">
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h3 class="panel-title">Dead Letter Queue</h3>
+              <p class="panel-subtitle">Jobs that exhausted all retry attempts</p>
+            </div>
+          </div>
+          <div id="dlq-table"></div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- Job detail drawer -->
+  <div id="drawer" class="drawer hidden">
+    <div class="drawer-backdrop" id="drawer-backdrop"></div>
+    <div class="drawer-panel">
+      <div class="drawer-head">
+        <div>
+          <h3 class="drawer-title">Job Detail</h3>
+          <p class="drawer-subtitle">Execution history and logs</p>
+        </div>
+        <button id="drawer-close" class="btn ghost icon-btn">
+          <svg viewBox="0 0 16 16" fill="none" width="16" height="16">
+            <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+      <div id="drawer-body" class="drawer-body"></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Toast notification -->
+<div id="toast" class="toast hidden">
+  <svg class="toast-icon" viewBox="0 0 16 16" fill="none" width="14" height="14">
+    <path d="M3 8l3.5 3.5L13 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+  <span id="toast-msg"></span>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
