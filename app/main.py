@@ -72,9 +72,16 @@ app.include_router(workers.router, prefix=API)
 app.include_router(dlq.router, prefix=API)
 app.include_router(metrics.router, prefix=API)
 
-# Dashboard (static, no build step) served at /
-# On Vercel the static files are served by Vercel's CDN directly (see vercel.json),
-# so we only mount them when running locally or in Docker.
-dashboard_dir = Path(__file__).resolve().parent.parent / "dashboard"
-if dashboard_dir.is_dir() and not IS_VERCEL:
-    app.mount("/", StaticFiles(directory=dashboard_dir, html=True), name="dashboard")
+# Dashboard (static files) served at /
+# Resolve dashboard/ relative to this file's location (app/main.py → ../dashboard).
+# On Vercel, dashboard/ is bundled inside the function via includeFiles in vercel.json,
+# so this path resolves correctly both locally and in the serverless runtime.
+_here = Path(__file__).resolve().parent          # .../app/
+_dashboard = _here.parent / "dashboard"          # .../dashboard/  (local + Docker)
+
+# Vercel unpacks the function bundle under /var/task; try that path as a fallback.
+if not _dashboard.is_dir() and IS_VERCEL:
+    _dashboard = Path("/var/task/dashboard")
+
+if _dashboard.is_dir():
+    app.mount("/", StaticFiles(directory=_dashboard, html=True), name="dashboard")
